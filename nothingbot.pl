@@ -4,16 +4,53 @@ use warnings;
 use v5.010;
 use POE qw(Component::IRC::State);
 
-my $gnick="forkbot";
-my $user="bot(){ bot|bot&; }; bot - NOT RUNNING AS ROOT.";
-my $srvr="irc.freenode.net";
-my $port=6667;
-my $prefix='+';
+
+my %handlers = ();
+my @modules = qw(
+	Base
+);
+our $gnick="forkbot";
+our $user="bot(){ bot|bot&; }; bot - NOT RUNNING AS ROOT.";
+our $srvr="irc.freenode.net";
+our $port=6667;
+our $prefix='&';
+our @channels = qw(##ninjabottest); ##ncss_challenge);
+
+my @help = ("NothingBot \x02v0.1\x02");
+sub register_listener_hash {
+	my $hash = shift;
+	for (keys %$hash) {
+		if (defined $handlers{$_}) {
+			my $t;
+			foreach $t (@{$hash->{$_}}) {
+				push @{$handlers{$_}}, $t;
+			}	
+		}
+		else {
+			$handlers{$_} = $hash->{$_};
+		}
+	}
+
+	print "\nREF: ",  ref $handlers{irc_msg}, " - $handlers{irc_msg}\n";
+}
+
+sub register_help_msgs {
+	my $source = shift;
+	push @help, "\x02Commands from module $source\x02:";
+	for (@_) {
+		push @help, $_;
+	}
+
+}
+push @INC, ".";
+for (@modules) {
+	require "plugins/$_.pm";
+	print "NothingBot::Plugins::${_}::register()";
+	"NothingBot::Plugins::${_}"->register();
+}
 
 
-my @channels = qw(##ninjabottest); ##ncss_challenge);
-
-my $irc = POE::Component::IRC::State->spawn(
+our $irc = POE::Component::IRC::State->spawn(
 	nick => $gnick,
 	server => $srvr,
 	port => $port,
@@ -34,6 +71,7 @@ $poe_kernel->run();
 my @memory = ();
 
 my %lastmessages = ();
+
 
 our $AWAY = undef;
 
@@ -73,115 +111,32 @@ sub irc_msg {
 	irc_public(@_);
 }
 
+sub should_handle_msg {
+	return 1;
+}
+
 sub irc_public {
 	my ($kernel, $sender, $who, $where, $what) = @_[KERNEL, SENDER, ARG0..ARG2];
 	my $nick = (split/!/, $who)[0];
 	my $chan = $where->[0];
 	my $poco = $sender->get_heap();
 	print "$nick ($chan): '$what'\n";
-	if (defined $AWAY and $what !~ /^\Q${prefix}\Ecomeback/) {
+	if (should_handle_msg() == 0 and $what !~ /^\Q${prefix}\Ecomeback/) {
 		return;
 	}
-	
-	if ($what =~ /^$gnick/ and $what =~ /(hello)|(hi)|(wassup)|(hey)/) {
-		print "PRIVMSG $chan Hey there, $nick\n";
-		$kernel->post( $sender => privmsg => $chan => "Hey there, $nick" );
-	}
-	elsif ($what =~ /^$gnick help/) {
-		$kernel->post( $sender => privmsg => $chan => "Say hi to me, and I'll say hi back." );
-	}
-	elsif ($what =~ /^s\/.*\/.*\/$/) {
-		my $newmsg = $lastmessages{$nick};
-		eval "\$newmsg =~ $what";
-		if ($?) {
-			$kernel->post($sender => privmsg => $chan => "Invalid RE.");
-			return;
+
+	if ($what =~ /^\Q${prefix}\Ehelp/i or $what =~ /^${gnick}.? help/) {
+		for (@help) {
+			$kernel->post($sender => privmsg => $who => $_);
 		}
-		$lastmessages{$nick} = $newmsg;
-		$kernel->post($sender => privmsg => $chan => "$nick meant $newmsg");
+		return;
 	}
 
-	elsif ($what =~ /^$gnick.*, ok\?/) {
-		my $msg = $what;
-		$msg =~ s/^$gnick.?//g;
-		$msg =~ s/, ok\?$//g;
-		$msg =~ s/ your / my /ig;
-		$msg =~ s/ you/ me /ig;
-		$msg =~ s/ (what)|(where)|(when)|(how)|(why)('(s)|(re))? (is)|(are) //ig;
-		chomp $msg;
-		$msg =~ s/^ +//;
-		if (grep(/^$msg/, @memory)) {
-			$kernel->post( $sender=>privmsg=>$chan=>"I already know that. Sorry.");
-			return;
-		}	
-		print "MEM: $msg\n";
-		push @memory, $msg;
-		$kernel->post( $sender => privmsg => $chan => "FYI, $nick, $msg." );
-	}
-	elsif ($what =~ /^$gnick/) {
-		my $msg = $what;
-		$msg =~ s/^$gnick.?//;
-		$msg =~ s/ your / my /ig;
-		$msg =~ s/ you / me /ig;
-		$msg =~ s/ (what)|(where)|(when)|(how)|(why)('s)? (is)|(are) //ig;
-		chomp $msg;
-		print "REQ: $msg\n";
-		$msg =~ s/^ +//;
-		if ($msg =~ /^is m(y|e)/) {
-			my $noun = (split/ /, $msg, 3)[2];
-			$msg =~ s/is (m(y|e)) .*$/$1 $noun is/;
-		}
-		$msg =~ s/[^\w\d]$//;
-		if (grep(/^$msg/, @memory)) {
-			$kernel->post($sender => privmsg => $chan => "$nick: " . (grep(/^$msg/, @memory))[0]);
-		}
-		else {
-			$kernel->post($sender => privmsg => $chan => "$nick: i'm clueless about $msg.");
+	for my $handler (@{$handlers{irc_msg}}) {
+		print "pass message on to $handler.\n";
+		if ($handler->($kernel, $sender, $who, $where, $what) == 1) {
+			last; # they want us to stop!
 		}
 	}
 
-	if ($what =~ /^\Q$prefix\E/) {
-		$what =~ s/^\Q$prefix\E//;
-		my ($cmd,@args) = split/ /,$what;
-		given (lc $cmd) {
-			when (/^shoo/) {
-				$AWAY = 1;
-				$kernel->post($sender => privmsg => $chan => "$nick: your wish is my command.");
-				$kernel->post($sender => away => "$nick told me to go away.");
-			}
-			when (/^comeback/) {
-				undef $AWAY;
-				$kernel->post($sender => "away");
-				$kernel->post($sender => privmsg => $chan => "$nick asked me to come back, so i did.");
-			}
-			when (/^act/) {
-				if ($args[0] eq 'be') {
-					$args[0] = 'is';
-				}
-				else {
-					$args[0] .= 's';
-				}
-				
-				$irc->yield(ctcp => $chan => "ACTION " . join(' ', @args));
-			}
-			when (/^slap/) {
-				$irc->yield(ctcp => $chan => "ACTION slaps " . join(' ', @args));
-			}
-			when (/^join/) {
-				$kernel->post($sender => join => $args[0]);
-			}
-			when (/^leave/) {
-				$kernel->post($sender => part => $args[0]);
-			}
-			when (/^restart/) {
-				exec($^X, $0, join(' ', @ARGV));
-			}
-			when (/^reload/) {
-				# TODO.
-			}
-		}
-	}
-	if ($what !~ /^$gnick/ and $what !~ /^\Q$prefix\E/) {
-		$lastmessages{$nick} = $what;
-	}
 }
