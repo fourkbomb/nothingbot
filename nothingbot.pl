@@ -11,7 +11,7 @@ my $port=6667;
 my $prefix='+';
 
 
-my @channels = qw(##ninjabottest ##ncss_challenge);
+my @channels = qw(##ninjabottest); ##ncss_challenge);
 
 my $irc = POE::Component::IRC::State->spawn(
 	nick => $gnick,
@@ -24,7 +24,7 @@ my $irc = POE::Component::IRC::State->spawn(
 
 POE::Session->create(
 	package_states => [
-		main => [ qw(_default _start irc_001 irc_public) ],
+		main => [ qw(_default _start irc_001 irc_public irc_msg) ],
 	],
 	heap => { irc => $irc }
 );
@@ -68,6 +68,11 @@ sub irc_001 {
 	$kernel->post( $sender => join => $_ ) for @channels;
 	return;
 }
+
+sub irc_msg {
+	irc_public(@_);
+}
+
 sub irc_public {
 	my ($kernel, $sender, $who, $where, $what) = @_[KERNEL, SENDER, ARG0..ARG2];
 	my $nick = (split/!/, $who)[0];
@@ -158,6 +163,21 @@ sub irc_public {
 				}
 				
 				$irc->yield(ctcp => $chan => "ACTION " . join(' ', @args));
+			}
+			when (/^slap/) {
+				$irc->yield(ctcp => $chan => "ACTION slaps " . join(' ', @args));
+			}
+			when (/^join/) {
+				$kernel->post($sender => join => $args[0]);
+			}
+			when (/^leave/) {
+				$kernel->post($sender => part => $args[0]);
+			}
+			when (/^restart/) {
+				exec($^X, $0, join(' ', @ARGV));
+			}
+			when (/^reload/) {
+				# TODO.
 			}
 		}
 	}
