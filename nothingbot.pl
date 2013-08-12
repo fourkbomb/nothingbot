@@ -133,7 +133,7 @@ sub irc_public {
 	}
 
 	for my $handler (@{$handlers{irc_msg}}) {
-		print "pass message on to $handler.\n";
+		#print "pass message on to $handler.\n";
 		if ($handler->($kernel, $sender, $who, $where, $what) == 1) {
 			last; # they want us to stop!
 		}

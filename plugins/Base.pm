@@ -25,28 +25,27 @@ sub register {
 
 my $gnick = $main::gnick;
 
-sub handle_chanmsg {
-	my ($kernel, $sender, $who, $where, $what) = @_;
-	my $nick = (split/!/, $who)[0];
-	my $chan = $where->[0];
-	my $poco = $sender->get_heap();
-	#print "$nick ($chan): '$what'\n";
+sub get_response_for {
+	my ($nick, $what, $who, $kernel, $is_chan) = @_;
+	my $chan = $who;
+	if ($is_chan == 1) {
+		$chan = shift;
+	}
 	if ($what =~ /^$gnick/ and $what =~ /(hello)|(hi)|(wassup)|(hey)/) {
 		print "PRIVMSG $chan Hey there, $nick\n";
-		$kernel->post( $sender => privmsg => $chan => "Hey there, $nick" );
-	}
-	elsif ($what =~ /^$gnick help/) {
-		$kernel->post( $sender => privmsg => $chan => "Say hi to me, and I'll say hi back." );
+		#$kernel->post( $sender => privmsg => $chan => "Hey there, $nick" );
+		return "Hey there, $nick!";
 	}
 	elsif ($what =~ /^s\/.*\/.*\/$/) {
 		my $newmsg = $::lastmessages{$nick};
 		eval "\$newmsg =~ $what";
 		if ($?) {
-			$kernel->post($sender => privmsg => $chan => "Invalid RE.");
+			#$kernel->post($sender => privmsg => $chan => "Invalid RE.");
+			return "Invalid RE.";
 			return;
 		}
 		$::lastmessages{$nick} = $newmsg;
-		$kernel->post($sender => privmsg => $chan => "$nick meant $newmsg");
+		return "$nick meant $newmsg";
 	}
 
 	elsif ($what =~ /^$gnick.*, ok\?/) {
@@ -59,12 +58,12 @@ sub handle_chanmsg {
 		chomp $msg;
 		$msg =~ s/^ +//;
 		if (grep(/^$msg/, @::memory)) {
-			$kernel->post( $sender=>privmsg=>$chan=>"I already know that. Sorry.");
+			return "I already know that. Sorry.";
 			return;
 		}	
 		print "MEM: $msg\n";
 		push @::memory, $msg;
-		$kernel->post( $sender => privmsg => $chan => "FYI, $nick, $msg." );
+		return "FYI, $nick, $msg.";
 	}
 	elsif ($what =~ /^$gnick/) {
 		my $msg = $what;
@@ -81,10 +80,10 @@ sub handle_chanmsg {
 		}
 		$msg =~ s/[^\w\d]$//;
 		if (grep(/^$msg/, @::memory)) {
-			$kernel->post($sender => privmsg => $chan => "$nick: " . (grep(/^$msg/, @::memory))[0]);
+			return "$nick: " . (grep(/^$msg/, @::memory))[0] ;
 		}
 		else {
-			$kernel->post($sender => privmsg => $chan => "$nick: i'm clueless about $msg.");
+			return "$nick: i'm clueless about $msg.";
 		}
 	}
 
@@ -94,13 +93,13 @@ sub handle_chanmsg {
 		given (lc $cmd) {
 			when (/^shoo/) {
 				$::AWAY = 1;
-				$kernel->post($sender => privmsg => $chan => "$nick: your wish is my command.");
 				$kernel->post($sender => away => "$nick told me to go away.");
+				return "$nick: your wish is my command.";
 			}
 			when (/^comeback/) {
 				undef $::AWAY;
 				$kernel->post($sender => "away");
-				$kernel->post($sender => privmsg => $chan => "$nick asked me to come back, so i did.");
+				return "$nick asked me to come back, so i did.";
 			}
 			when (/^act/) {
 				if ($args[0] eq 'be') {
@@ -129,13 +128,28 @@ sub handle_chanmsg {
 				$kernel->post($sender => privmsg => $chan => "Reloading \x02$args[0]\x02...");
 				do "plugins/$args[0].pm";
 				$kernel->post($sender => privmsg => $chan => "Done!");
+				return undef;
 			}
 		}
 	}
+}
+
+sub handle_chanmsg {
+	my ($kernel, $sender, $who, $where, $what) = @_;
+	my $nick = (split/!/, $who)[0];
+	my $chan = $where->[0];
+	my $poco = $sender->get_heap();
+	#print "$nick ($chan): '$what'\n";
+	
 	if ($what !~ /^$gnick/ and $what !~ /^\Q$::prefix\E/) {
 		$::lastmessages{$nick} = $what;
 	}
-
+	#my ($nick, $what, $who, $kernel, $is_chan) = @_;
+	my $msg = get_response_for($nick, $what, $who, $kernel, 1, $chan);
+	if (defined $msg) {
+		$kernel->post($sender => privmsg => $chan => $msg);
+	}
+	
 	return 0;
 }
 
