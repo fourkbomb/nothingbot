@@ -260,7 +260,7 @@ sub irc_public {
 		my @args = split/ /, $what;
 		shift @args;
 		if (@args) {
-			$kernel->post($sender => privmsg => $nick => "Match(es): " . join(", ", grep(/^$args[0]/, @help)));
+			$kernel->post($sender => privmsg => $nick => "Match(es): " . join(", ", grep(/^\Q$args[0]\E/, @help)));
 		}
 		else {
 			my $str = "";
@@ -268,7 +268,8 @@ sub irc_public {
 				$str .= (split/ /)[0] . " ";
 			}
 			$kernel->post($sender => privmsg => $nick => "$str");
-		   	$kernel->post($sender => privmsg => $nick => "help <cmd> for more info on a command.\n");
+		   	$kernel->post($sender => privmsg => $nick => "help <cmd> for more info on a command. You can also tell me".
+			   " things in the format '$gnick, x is y, ok?', and ask for it back in the format '$gnick, what is x?'");
 		}
 		#for (@help) {
 		#	$kernel->post($sender => privmsg => $nick => $_);

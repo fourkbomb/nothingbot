@@ -13,8 +13,13 @@ require "utils/Colours.pm";
 use v5.010;
 my %subs = (irc_msg => [\&irc_public]);
 
-sub register {
+my @help = (
+	"${main::prefix}g TERMS - google for TERMS, and show the first result.",
+	"${main::prefix}short URL - make URL shorter using goo.gl"
+);
 
+sub register {
+	&::register_help_msgs("Web", @help);
 	&::register_listener_hash(\%subs);
 }
 
@@ -41,21 +46,7 @@ sub google {
 		my $data = decode_json($res->{content});
 
 		my $sr = $data->{responseData}{results}[0];
-		my $shortened = HTTP::Tiny->new->request('POST', 'https://www.googleapis.com/urlshortener/v1/url', 
-			{
-				content => '{"longUrl": "' . $sr->{url} . '"}',
-				headers => {"Content-Type" => "application/json"}
-			}
-		);
-		my $url = $sr->{url};
-		if ($shortened->{success}) {
-			$url = decode_json($shortened->{content});
-			$url = $url->{id};
-		}
-		else {
-			print "failed to goo.gl URL: $shortened->{status} $shortened->{reason}\n";
-			print "content: $shortened->{content}\n";
-		}
+		my $url = shorten_url($sr->{url});	
 		my $title = $sr->{title};
 		$title =~ s#</?b>#$NothingBot::Colours::BOLD#g;
 		$title = decode_entities($title);
@@ -67,8 +58,26 @@ sub google {
 	}
 }
 
+sub shorten_url {
+	my $url = shift;
+	my $shortened = HTTP::Tiny->new->request('POST', 'https://www.googleapis.com/urlshortener/v1/url', 
+			{
+				content => '{"longUrl": "' . $url . '"}',
+				headers => {"Content-Type" => "application/json"}
+			}
+	);
+	$url = $url;
+	if ($shortened->{success}) {
+		$url = decode_json($shortened->{content});
+		$url = $url->{id};
+	}
+	else {
+		print "failed to goo.gl URL: $shortened->{status} $shortened->{reason}\n";
+		print "content: $shortened->{content}\n";
+	}
 
-
+	return $url;
+}
 	
 sub handle_msg {
 	my ($nick, $what, $who, $kernel, $sender, $is_chan, $chan) = @_;
@@ -79,6 +88,10 @@ sub handle_msg {
 		given ($cmd) {
 			when ("g") {
 				return google(@args);
+			}
+			when ("short") {
+				return "Shortened version of $args[0]: $NothingBot::Colours::RED\x02" . shorten_url($args[0]) .
+				"$NothingBot::Colours::NORMAL\x02";
 			}
 		}
 	}

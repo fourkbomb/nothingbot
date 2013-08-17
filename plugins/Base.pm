@@ -85,6 +85,9 @@ sub get_response_for {
 		$msg =~ s/ you/ me /ig;
 		$msg =~ s/ (what)|(where)|(when)|(how)|(why)('(s)|(re))? (is)|(are) //ig;
 		chomp $msg;
+		my $omsg = $msg;
+		$msg =~ s/ is //g;
+		$msg =~ s/ are //g;
 		$msg =~ s/^ +//;
 		if (grep(/^$msg/, @::memory)) {
 			return "I already know that. Sorry.";
@@ -92,14 +95,14 @@ sub get_response_for {
 		}	
 		print "MEM: $msg\n";
 		push @::memory, $msg;
-		return "FYI, $nick, $msg.";
+		return "FYI, $nick, $omsg.";
 	}
 	elsif ($what =~ /^$gnick/) {
 		my $msg = $what;
 		$msg =~ s/^$gnick.?//;
 		$msg =~ s/ your / my /ig;
 		$msg =~ s/ you / me /ig;
-		$msg =~ s/ (what)|(where)|(when)|(how)|(why)('s)? (is)|(are) //ig;
+		$msg =~ s/ (what)|(where)|(when)|(how)|(why)('s)? ((is)|(are))? //ig;
 		chomp $msg;
 		print "REQ: $msg\n";
 		$msg =~ s/^ +//;
