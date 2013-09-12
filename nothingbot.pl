@@ -6,11 +6,18 @@ use POE qw(Component::IRC::State);
 use Getopt::Long;
 
 our %config = ();
-my %handlers = ();
+our %handlers = ();
 our @modules = qw(
+	Joke
+	Regexp
 	Base
 	Web
+	Encoder
 );
+our %module_states = ();
+our %module_errors = ();
+# unloaded modules
+our @unloaded = qw();
 our $cfgfile="$ENV{HOME}/.nothingbot.conf";
 
 if (not -e $cfgfile) {
@@ -117,37 +124,35 @@ sub load_config {
 	close $file;
 }
 
-my @help = ();#("NothingBot \x02v0.1\x02");
+my %help = ();#("NothingBot \x02v0.1\x02");
 sub register_listener_hash {
 	my $hash = shift;
-	for (keys %$hash) {
-		if (defined $handlers{$_}) {
-			my $t;
-			foreach $t (@{$hash->{$_}}) {
-				push @{$handlers{$_}}, $t;
-			}	
-		}
-		else {
-			$handlers{$_} = $hash->{$_};
-		}
-	}
+	my $super = (caller(0))[0];
+	print "Procesing hash from $super....\n";
+	$handlers{$super} = $hash;
 
-	print "\nREF: ",  ref $handlers{irc_msg}, " - $handlers{irc_msg}\n";
 }
 
 sub register_help_msgs {
-	#my $source = shift;
+	my $source = shift;
 	#push @help, "\x02Commands from module $source\x02:";
-	for (@_) {
-		push @help, $_;
-	}
-
+	my @j = grep { s/^\Q$prefix\E// } @_;
+	$help{$source} = \@j;
 }
 push @INC, "./plugins";
 for (@modules) {
-	require "plugins/$_.pm";
-	print "NothingBot::Plugins::${_}::register()";
-	"NothingBot::Plugins::${_}"->register();
+	eval 'require "plugins/$_.pm";';
+	if (not $@) {
+		require "plugins/$_.pm";
+		print "NothingBot::Plugins::${_}::register()\n";
+		"NothingBot::Plugins::${_}"->register();
+		$module_states{"NothingBot::Plugins::$_"} = "SUCCESS";
+	}
+	else {
+		$module_states{"NothingBot::Plugins::$_"} = "FAILED";
+		$module_errors{"NothingBot::Plugins::$_"} = $@;
+		print STDERR "Module '$_' failed to load: $@\n";
+	}
 }
 
 
@@ -156,13 +161,14 @@ our $irc = POE::Component::IRC::State->spawn(
 	server => $srvr,
 	port => int $port,
 	ircname => $user,
-	username=>"uid2"
+	flood	=> 1,
+	username=>"nothingbot"
 	
 ) or die "Failed to connect: $!";
 
 POE::Session->create(
 	package_states => [
-		main => [ qw(_default _start irc_001 irc_public irc_msg irc_whois) ],
+		main => [ qw(_default _start irc_001 irc_public irc_msg irc_whois irc_ctcp) ],
 	],
 	heap => { irc => $irc }
 );
@@ -212,6 +218,8 @@ sub irc_001 {
 }
 
 sub irc_msg {
+	my @new_args = @_;
+
 	irc_public(@_);
 }
 
@@ -219,15 +227,21 @@ sub should_handle_msg {
 	return 1;
 }
 
+our $DISABLE_AUTH = 0;
 sub check_can_run {
 	my $cmd = shift;
 	my $who = shift;
 	my $where = shift;
-	my $poco_obj = shift;
+	my $is_chan = 0;
+	if (grep(/^#/, @$where)) {
+		$is_chan = 1;
+	}
+	print "$is_chan\n";
 	my @biglist = @opcmds;
-	push @opcmds, $_ for @ownercmds;
-	print "check auth: $cmd for $who in $where\n";
-	if ($who =~ /^$umask$/) {
+	#push @opcmds, $_ for @ownercmds;
+	print "check auth: $cmd for $who in ", join(' ', @$where), "\n";
+	
+	if ($who =~ /^$umask$/ and ($DISABLE_AUTH != 1 or $cmd eq "recover")) {
 		print "$who =~ /^$umask$/\n";
 		return 1;
 	}
@@ -236,7 +250,7 @@ sub check_can_run {
 		return 1;
 	}
 	elsif (grep /^$cmd$/, @opcmds) {
-		if ($poco_obj->is_channel_operator($where, (split(/!/, $who))[0])) {
+		if ($is_chan and $irc->yield(is_channel_operator => $where => (split(/!/, $who))[0])) {
 			print "$cmd is op cmd and $who is op.\n";
 			return 1;
 		}
@@ -245,30 +259,85 @@ sub check_can_run {
 			return 0;
 		}
 	}
+	elsif (grep /^$cmd$/, @ownercmds) {
+		print "not umask. disallowing.\n";
+		return 0;
+	}
 	print "allowed by default.\n";
 	return 1;
 }
 
 sub irc_public {
 	my ($kernel, $sender, $who, $where, $what) = @_[KERNEL, SENDER, ARG0..ARG2];
+	if ($AWAY and not $what =~ /^\Q$prefix\Ecomeback/) {
+		return	;
+	}
 	my $nick = (split/!/, $who)[0];
-	my $chan = $where->[0];
+	my $chan = $where;
+	if (grep($gnick, @$where) and not grep(/^#/, @$where)) {
+		my @w = grep { $_ ne $gnick } @$where;
+		push @w, $nick;
+		$where = \@w;
+	}
+	my @w = grep { $_ ne $gnick } @$where;
+	$where = \@w;
 	my $poco = $sender->get_heap();
-	print "$who ($chan): '$what'\n";
-
+	print "$who ($chan->[0]): '$what'\n";
+	if ($what =~ /^\Q$prefix\E/) {
+		my $cmd = (split/ /, $what)[0];
+		$cmd =~ s/^\Q$prefix\E//;
+		if (check_can_run($cmd, $who, $where) == 0) {
+			$::irc->yield(notice => $nick => "Access denied.");
+			return;
+		}
+		if ((split/ /, $what)[-1] =~ /^\@\@/) {
+			print "@@ detected!\n";
+			# redirect
+			my $targ = (split/ /, $what)[-1];
+			$targ =~ s/^\@\@//;
+			print "new targ: $targ\n";
+			$who = "$targ!*@*";
+			if (grep $nick, @$where and not grep(/^#/, @$where)) {
+				my @w = grep {$_ ne $nick} @$where;
+				push @w, $targ;
+				$where = \@w;
+			}
+			$nick = $targ;
+			my @z = split/ /, $what;
+			pop @z;
+			$what = join(' ', @z);
+		}
+	}
+	print "new what: $what\n";	
 	if ($what =~ /^\Q${prefix}\Ehelp/i or $what =~ /^${gnick}.? help/) {
 		my @args = split/ /, $what;
 		shift @args;
 		if (@args) {
-			$kernel->post($sender => privmsg => $nick => "Match(es): " . join(", ", grep(/^\Q$args[0]\E/, @help)));
+			if (grep /^\Q$args[0]\E$/, keys %help) {
+				print "notice to $nick\n";
+				$irc->yield(notice => $nick => "Command(s) from \x02$args[0]\x0f: " . join(', ', @{$help{$args[0]}}));
+				return;
+			}
+
+			my @matches = ();
+			for (keys %help) {
+				my $h = $help{$_};
+				for my $k (grep(/^\Q$args[0]\E/, @{$h})) {
+					push @matches, $k;
+				}
+			}
+			$kernel->post($sender => notice => $nick => "Match(es): " . join(", ", @matches));
 		}
 		else {
 			my $str = "";
-			for (@help) {
-				$str .= (split/ /)[0] . " ";
+			for (keys %help) {
+				$str .= "\x02$_\x0f ";
+				for (@{$help{$_}}) {
+					$str .= (split/ /)[0] . " ";
+				}
 			}
-			$kernel->post($sender => privmsg => $nick => "$str");
-		   	$kernel->post($sender => privmsg => $nick => "help <cmd> for more info on a command. You can also tell me".
+			$kernel->post($sender => notice => $nick => "$str");
+		   	$kernel->post($sender => notice => $nick => "help <cmd> for more info on a command. You can also tell me".
 			   " things in the format '$gnick, x is y, ok?', and ask for it back in the format '$gnick, what is x?'");
 		}
 		#for (@help) {
@@ -278,22 +347,105 @@ sub irc_public {
 		return;
 	}
 	elsif ($what =~ /^\Q${prefix}\Eauthlevel/i) {
-		if ($who =~ /$umask/) {
-			$kernel->post($sender => privmsg => $nick => "You are my master.");
+		if ($who =~ /^$umask/) {
+			$kernel->post($sender => notice => $nick => "You are my master.");
 		}
 		else {
-			$kernel->post($sender => privmsg => $nick => "You are just another person.");
+			$kernel->post($sender => notice => $nick => "You are just another person.");
 		}
 		return;
 	}
+	elsif ($what =~ /^\Q${prefix}\Erecover/) {
+		$::irc->yield(notice => $nick => "auth \x02re-activated\x0f.");
+		$DISABLE_AUTH = 0;
+	}
+	elsif ($what =~ /^\Q${prefix}\Eauth disable/) {
+		$::irc->yield(notice => $nick => "auth \x02disabled\x0f. '${prefix}recover to re-activate");
+		$DISABLE_AUTH = 1;
+	}
+	OUTER:
+	for my $package (keys %handlers) {
+		if (grep /^$package$/, @unloaded) {
+			next;
+		}
+		print "$package...\n";
+		for my $handler (@{$handlers{$package}->{irc_msg}}) {
+			#print "pass message on to $handler.\n";
+			#if (not defined $handler or *handler->{PACKAGE} eq "__ANON__") {
+			#	print "it's a trap!\n";
+			#	next;
+			#}
+			print "  handler!\n";
+			my $answer = 0;
+			my $stdout = "";
+			my $stderr = "";
+			{
+				local *STDOUT;
+				local *STDERR;
 
-	for my $handler (@{$handlers{irc_msg}}) {
-		#print "pass message on to $handler.\n";
-		if ($handler->($kernel, $sender, $who, $where, $what) == 1) {
-			last; # they want us to stop!
+				open STDOUT, ">", \$stdout;
+				open STDERR, ">", \$stderr;
+				$answer = eval '$handler->($who, $where, $what)';
+				if ($@) {
+					print "ERROR: $package failed to process event irc_msg (args $who, $where, $what): $@\n";
+					$@ =~ s/\n//g;
+					chomp $@;
+					my $np = (split/::/,$package,3)[2];
+					$stdout =~ s/\n//g;
+					$stderr =~ s/\n//g;
+					$irc->yield(notice => $nick => "\x0304Error\x0f :: running handler from module $np :: \x2f$@\x0f");
+					$irc->yield(notice => $nick => "\x0304Error\x0f :: handler $np :: stdout :: $stdout");
+					$irc->yield(notice => $nick => "\x0304Error\x0f :: handler $np :: stderr :: $stderr");
+					next;
+				}
+			}
+			if (defined $answer and $answer == 1) {
+				print "$package\'s handler said to stop\n";
+				last OUTER; # they want us to stop!
+			}
 		}
 	}
 
+}
+
+
+
+sub irc_ctcp {
+	my ($ctcp, $sender, $towhom, $what) = @_[ARG0..ARG3];
+	if ($AWAY) {
+		return;
+	}
+	$ctcp = lc $ctcp;
+	if ($ctcp eq "source") {
+		print "ctcp source detected.\n";
+		$irc->yield(ctcpreply => (split(/!/,$sender))[0] => "SOURCE https://github.com/keepcalm444/nothingbot");
+	}
+	OUTER:
+	for my $package (keys %handlers) {
+		if (grep /^$package$/, @unloaded) {
+			next;
+		}
+		for my $handler (@{$handlers{$package}->{irc_ctcp}}) {
+			#print "pass message on to $handler.\n";
+			#if (not defined $handler or *handler->{PACKAGE} eq "__ANON__") {
+			#	print "it's a trap!\n";
+			#	next;
+			#}
+			if ($handler->($ctcp, $sender, $towhom, $what) == 1) {
+				last OUTER; # they want us to stop!
+			}
+		}
+		for my $handler (@{$handlers{$package}->{"irc_ctcp_$ctcp"}}) {
+			#print "pass message on to $handler.\n";
+			#if (not defined $handler or *handler->{PACKAGE} eq "__ANON__") {
+			#	print "it's a trap!\n";
+			#	next;
+			#}
+			if ($handler->($sender, $towhom, $what) == 1) {
+				last OUTER; # they want us to stop!
+			}
+		}
+	}
 }
 
 sub irc_whois {
